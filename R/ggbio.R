@@ -11,39 +11,39 @@
 #' gp <- GGBIO.dot_summary(finemap_dat=BST1)
 GGBIO.dot_summary <- function(finemap_dat,
                               PP_threshold=.95,
+                              show_tools = c("ABF", "SUSIE", "FINEMAP", "POLYFUN_SUSIE", "PAINTOR"),
                               show_plot=T){
   library(data.table)
-  snp.labs <- construct_SNPs_labels(subset_DT = finemap_dat,
-                                    remove_duplicates = F) %>%
+  # factor means SNPs are ordered by position in plot
+  snp.labs <-
+    construct_SNPs_labels(subset_DT = finemap_dat, remove_duplicates = F) %>%
     dplyr::arrange(CHR,POS) %>%
     dplyr::mutate(SNP=factor(SNP, levels = unique(SNP), ordered = T))
-  CS_cols <- grep(".CS$",colnames(snp.labs), value = T)
-  PP_cols <- grep(".PP$",colnames(snp.labs), value = T)
-  methodDict <- setNames(gsub("\\.PP","",PP_cols),1:length(PP_cols))
 
-  snp.melt <- suppressWarnings(
-    data.table::melt.data.table(data = data.table::as.data.table(snp.labs),
-                                id.vars = c("SNP","CHR","POS","leadSNP","Consensus_SNP","color","size","shape"),
-                                measure.vars =  patterns(CS_group=".CS$", PP=".PP$"),
-                                variable.name = c("method")) %>%
-      dplyr::mutate(method=factor(methodDict[method], levels = rev(unname(methodDict)), ordered = T),
-                    CS=ifelse(CS_group>0,T,NA),
-                    PP=ifelse(PP>PP_threshold,PP,NA))
-  )
-  gp <- ggplot() +
-    # Lead SNP
-    geom_point(data = subset(snp.melt, leadSNP), aes(x=SNP, y=method),
-               color="red", shape=18, size=2, stroke=1) +
-    # CS
-    geom_point(data = subset(snp.melt, !is.na(CS)), aes(x=SNP, y=method),
-               color="green3", shape=1, size=3, stroke=1) +
-    # Consensus
-    geom_point(data = subset(snp.melt, Consensus_SNP), aes(x=SNP, y=method),
-               color="darkgoldenrod1", shape=2, size=5, stroke=1) +
-    scale_y_discrete(position = "right") +
-    theme_bw()
-  if(show_plot)print(gp)
+  snp_df <-
+    snp.labs %>%
+    dplyr::select(SNP, `Consensus Set` = Consensus_SNP, `Lead SNP` = leadSNP, ends_with(".PP")) %>%
+    dplyr::distinct() %>%
+    tidyr::gather(key = "method", value = "PP", -SNP) %>%
+    dplyr::mutate(PP =  ifelse(PP > PP_threshold, TRUE, FALSE) ) %>%
+    dplyr::mutate(method = gsub(".PP$", "", method)) %>%
+    dplyr::mutate(method_label = ifelse(method %in% c( show_tools, "mean"), "Credible Set", method )) %>%
+    dplyr::mutate( method_label = factor(method_label, levels = c("Lead SNP", "Credible Set", "Consensus Set"))) %>%
+    dplyr::mutate(method = factor(method, levels = rev(c("Lead SNP", show_tools, "mean", "Consensus Set" ))) )
+
+  gp <- snp_df %>%
+    ggplot( aes(x = SNP, y = method) ) +
+      geom_point( aes(alpha = PP, colour = method_label, shape = method_label), size  = 3) +
+      scale_alpha_manual(values = c(0,1) ) +
+      scale_colour_manual("", values = c("Lead SNP" = "red", "Consensus Set" = "darkgoldenrod1", "Credible Set" = "green3")) +
+      scale_shape_manual("", values = c("Lead SNP" = 18, "Consensus Set" = 17, "Credible Set" = 19)) +
+      guides(alpha = FALSE) + theme_bw() + labs(y = "", x = "")
+
+  if(show_plot){ print(gp) }
   return(gp)
+
+
+
 }
 
 
@@ -343,25 +343,42 @@ GGBIO.QTL_track <- function(gr.snp,
 GGBIO.transcript_model_track <- function(gr.snp_CHR,
                                          max_transcripts=1,
                                          show.legend=T,
-                                         show_plot=F){
+                                         show_plot=F,
+                                         plot.window = NULL){
+
+
   # library(ggbio)
   printer("++ GGBIO:: Gene Model Track")
   lead.index <- which(gr.snp_CHR$leadSNP==T)
+  lead.pos <- gr.snp_CHR[lead.index,]$POS
+
+  if(!is.null(plot.window)){
+    xlims <- c(lead.pos-as.integer(plot.window/2),
+               lead.pos+as.integer(plot.window/2))
+  } else {
+    xlims <- c(min(gr.snp_CHR$POS),
+               max(gr.snp_CHR$POS))
+  }
+  # if closer plot window requested then only get transcripts within that window
+
   printer("+ Annotating at transcript-level.")
+  # this is slow to do each time - should be moved outside at some point
   db.gr <- ensembldb::transcripts(EnsDb.Hsapiens.v75::EnsDb.Hsapiens.v75) %>%
     data.table::as.data.table() %>%
     dplyr::mutate(index=row.names(.)) %>%
     dplyr::group_by(gene_id) %>%
     dplyr::slice(1:max_transcripts)
+
   if(!"symbol" %in% colnames(db.gr)){
     db.gr$symbol <- ensembl_to_hgnc(db.gr$gene_id)
   }
   # Subset to only the region encompassed by the sumstats
-  db.gr <- subset(db.gr,
+  db.gr <-subset(db.gr,
                     seqnames == unique(gr.snp_CHR$CHR) &
-                    start >= min(gr.snp_CHR$POS) &
-                    end <= max(gr.snp_CHR$POS)) %>%
+                    (start >= xlims[1] | end >= xlims[1] ) &
+                    (start <= xlims[2] | end <= xlims[2]) ) %>%
     GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns = T)
+
   db.gr$symbol <- factor(db.gr$symbol, levels = unique(db.gr$symbol), ordered = T)
   edb <-  ensembldb::addFilter( EnsDb.Hsapiens.v75::EnsDb.Hsapiens.v75,
                                 AnnotationFilter::TxIdFilter(db.gr$tx_id))
@@ -375,7 +392,8 @@ GGBIO.transcript_model_track <- function(gr.snp_CHR,
       theme_classic() +
       theme(strip.text.y = element_text(angle = 0),
             strip.text = element_text(size=9),
-            legend.text = element_text(size=5),
+            legend.title = element_blank(),
+            legend.text = element_text(size=5, face = "italic"),
             legend.key.width=grid::unit(.1,"line"),
             legend.key.height=grid::unit(.1,"line")) +
       guides(fill=guide_legend(override.aes = list(size=1), ncol=4),
@@ -438,6 +456,7 @@ GGBIO.plot <- function(finemap_dat,
                        LD_matrix=NULL,
                        color_r2=T,
                        method_list=c("ABF","FINEMAP","SUSIE","POLYFUN_SUSIE"),
+                       show_fine_mapping = TRUE,
                        dot_summary=F,
                        QTL_prefixes=NULL,
                        mean.PP=T,
@@ -460,6 +479,7 @@ GGBIO.plot <- function(finemap_dat,
                        Nott_show_placseq=T,
                        Nott_binwidth=2500,
                        Nott_bigwig_dir=NULL,
+                       plac_overlaps = TRUE,
 
                        save_plot=T,
                        show_plot=T,
@@ -519,16 +539,6 @@ GGBIO.plot <- function(finemap_dat,
                                             start = "POS", end = "POS")
 
 
-  # Treack 0: Summary
-  if(dot_summary){
-    printer("++ GGBIO:: Creating dot plot summary of fine-mapping results.")
-    gp <- GGBIO.dot_summary(finemap_dat = finemap_dat,
-                            PP_threshold = PP_threshold,
-                            show_plot = F)
-    TRACKS_list <- append(TRACKS_list, list(gp))
-    names(TRACKS_list)[ifelse(is.null(TRACKS_list),1,length(TRACKS_list))] <- "Fine-mapping\nSummary"
-  }
-
 
   # Track 1: GWAS
   printer("++ GGBIO::","GWAS","track", v=verbose)
@@ -558,15 +568,30 @@ GGBIO.plot <- function(finemap_dat,
 
 
   # Tracks 2n: Fine-mapping
-  for(m in method_list){
-    printer("++ GGBIO::",m,"track", v=verbose)
-    track.finemapping <- GGBIO.SNP_track(gr.snp, method = m,
-                                   labels_subset = c("Lead SNP", "Credible Set"),
-                                   color_r2 = color_r2,
-                                   show.legend = F)
-    TRACKS_list <- append(TRACKS_list, track.finemapping)
-    names(TRACKS_list)[length(TRACKS_list)] <- m
+  if( show_fine_mapping == TRUE){
+    for(m in method_list){
+      printer("++ GGBIO::",m,"track", v=verbose)
+      track.finemapping <- GGBIO.SNP_track(gr.snp, method = m,
+                                           labels_subset = c("Lead SNP", "Credible Set"),
+                                           color_r2 = color_r2,
+                                           show.legend = F)
+      TRACKS_list <- append(TRACKS_list, track.finemapping)
+      names(TRACKS_list)[length(TRACKS_list)] <- m
+    }
   }
+
+  # Track 2N: Summary
+  if(dot_summary){
+    printer("++ GGBIO:: Creating dot plot summary of fine-mapping results.")
+    dot_summary_plot <- GGBIO.dot_summary(finemap_dat = finemap_dat,
+                                          PP_threshold = PP_threshold,
+                                          show_plot = F)
+
+    TRACKS_list <- append(TRACKS_list, list(gp))
+    names(TRACKS_list)[ifelse(is.null(TRACKS_list), 1, length(TRACKS_list))] <- "Fine-mapping\nSummary"
+  }
+
+
 
   # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   # Track 3: Gene Model Track
@@ -661,6 +686,7 @@ GGBIO.plot <- function(finemap_dat,
                                                  show_regulatory_rects=Nott_regulatory_rects,
                                                  return_interaction_track=T,
                                                  show_arches=T,
+                                                 highlight_plac = plac_overlaps,
                                                  save_annot=T)
       TRACKS_list <- append(TRACKS_list, track.Nott_plac)
       names(TRACKS_list)[length(TRACKS_list)] <- "Nott (2019)\nPLAC-seq"
@@ -669,11 +695,11 @@ GGBIO.plot <- function(finemap_dat,
   }
 
   # ------- Fuse all tracks
-  if(dot_summary){
+  #if(dot_summary){
     # Dot summary requires a special way of merging bc it doesn't share the same x-axis
-    grob_list <- lapply(TRACKS_list, function(x){ggbio:::Grob(x)})
-    TRKS_FINAL <- patchwork::wrap_plots(grob_list, ncol = 1)
-  } else {
+    #grob_list <- lapply(TRACKS_list, function(x){ggbio:::Grob(x)})
+    #TRKS_FINAL <- patchwork::wrap_plots(grob_list, ncol = 1)
+  #} else {
     heights <- GGBIO.track_heights_dict(TRACKS_list = TRACKS_list)
     params_list <- list(title = paste0(locus," locus [",length(GenomicRanges::seqnames(gr.snp))," SNPs]"),
                         track.bg.color = "transparent",
@@ -688,7 +714,10 @@ GGBIO.plot <- function(finemap_dat,
     trks <- suppressMessages(do.call("tracks", append(TRACKS_list, params_list)))
     TRKS_FINAL <- GGBIO.add_lines(trks = trks,
                                   finemap_dat = finemap_dat)
-  }
+
+    #TRKS_FINAL <- patchwork::wrap_plots(list(dot_summary_plot, TRKS_FINAL))
+
+  #}
 
   if(save_plot){
     window_suffix <- ifelse(is.null(plot.window),"",paste0(plot.window/1000,"kb"))
