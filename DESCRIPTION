@@ -45,9 +45,6 @@ Imports:
     GenomeInfoDb
 Remotes:
   github::stephenslab/susieR@0.9.0,  
-  bioc::3.12/remotes,
-  bioc::3.12/snpStats,
-  bioc::3.12/ggbio,
   url::https://cran.r-project.org/src/contrib/Archive/foreign/foreign_0.8-76.tar.gz,
   url::https://cran.r-project.org/src/contrib/Archive/refGenome/refGenome_1.7.7.tar.gz,
   url::https://cran.r-project.org/src/contrib/Archive/XGR/XGR_1.1.7.tar.gz
